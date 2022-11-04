@@ -1,0 +1,254 @@
+---
+title: "HW 3"
+author: "Iris Zhong"
+date: '2022-10-25'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(nlme)
+```
+
+
+```{r}
+data <- read_csv("processed_data.csv")
+```
+
+Aggregate by week per person
+
+```{r}
+data_by_month <- data %>% 
+  group_by(user_id, month = month(start_time)) %>% 
+  summarize(month_avg = mean(correct),
+            assignment_count_per_month = uniqueN(assignment_id),
+            problem_count_per_month = uniqueN(problem_id))
+```
+
+```{r}
+data_by_month %>%
+  group_by(user_id) %>%
+  summarize(n = n()) %>%
+  ggplot(., aes(x = n)) +
+  geom_histogram()
+```
+
+```{r}
+data_by_month %>%
+  group_by(user_id) %>%
+  summarize(n_item = sum(problem_count_per_month)) %>%
+  ggplot(., aes(x = n_item)) +
+  geom_histogram(binwidth = 1) +
+  xlim(0, 100)
+```
+
+
+keep persons that have responses in at least 6 months
+
+```{r}
+data_by_month <- data_by_month %>%
+  group_by(user_id) %>%
+  mutate(n_month = n()) %>%
+  filter(n_month > 6) %>%
+  ungroup()
+```
+
+keep persons that have tried at least 10 items each month they participated
+
+```{r}
+data_by_month <- data_by_month %>%
+  mutate(item_count_per_month_over_10 = ifelse(problem_count_per_month >= 10, 1, 0)) %>%
+  group_by(user_id) %>%
+  mutate(item_count_per_month_over_10 = mean(item_count_per_month_over_10)) %>%
+  filter(item_count_per_month_over_10 == 1) %>%
+  select(-item_count_per_month_over_10) %>%
+  ungroup()
+```
+
+
+
+```{r}
+data_by_month %>% summarize_all(n_distinct)
+```
+
+```{r}
+data_by_month <- data_by_month %>%
+  select(-c(n_month)) %>%
+  group_by(user_id) %>%
+  as.tibble() %>%
+  complete(user_id, month, 
+           fill = list(month_avg = NA, assignment_count_per_month = 0, problem_count_per_month = 0)) %>% 
+  as.data.frame()
+```
+
+Add number of items/assignments by learner
+
+```{r}
+data_by_month <- data_by_month %>%
+  group_by(user_id) %>%
+  mutate(n_problem = sum(problem_count_per_month),
+         n_assignment = sum(assignment_count_per_month))
+```
+
+Recode month so that the month number reflects the number of months passed since September. (September coded as 1, October as 2, ..., August as 12)
+
+```{r}
+data_by_month <- data_by_month %>%
+  mutate(month = case_when(month > 8 ~ month - 8,
+                           month <= 8 ~ month + 4))
+```
+
+
+Plot trajectories:
+
+```{r}
+ggplot(data = data_by_month,                    #data set
+       aes(x = month, y = month_avg, group = user_id)) + #setting variables
+  #geom_point(size=.5, alpha = 0.01) + #adding points to plot
+  geom_line(alpha = 0.05) +  #adding lines to plot
+  theme_bw() +   #changing style/background
+  scale_x_continuous(breaks = seq(0, 11)) +
+  labs(x = "Month",
+       y = "Average score per month",
+       title = "Learner average score by month")
+```
+
+Centering month (in September: month = 0)
+
+```{r}
+data_by_month <- data_by_month %>%
+  mutate(month = month - 1)
+```
+
+# Model fitting
+
+```{r}
+#fitting no growth model and assigning it to an object
+mod0 <- nlme(month_avg ~ beta_1 + d_1i,    #model equation
+                     data=data_by_month,     #data set                   
+                     fixed=beta_1~1,          #fixed parameters              
+                     random=d_1i~1,           #random coefficients
+                     group=~user_id,               #clustering variable         
+                     start=c(beta_1=0.5),      #starting values
+                     na.action = na.pass)  #missing data treatment                     
+
+#obtaining summary of the model using the object we just created                     
+summary(mod0)
+```
+
+
+
+```{r}
+#obtaining predicted scores for individuals
+data_by_month$pred_ng <- predict(mod0)
+
+#obtaining predicted scores for prototype
+data_by_month$proto_ng <- predict(mod0, level=0)
+
+#plotting predicted trajectories
+#intraindividual change trajetories
+ggplot(data = data_by_month, aes(x = month, y = pred_ng, group = user_id)) +
+  #geom_point(color="black", alpha = 0.05) + 
+  geom_line(color="black", alpha = 0.05) +
+  geom_line(aes(x = month, y = proto_ng), color="red",size=2) + 
+  theme_bw() +   #changing style/background
+  #setting the x-axis with breaks and labels
+  scale_x_continuous(breaks = seq(0, 11)) +
+  labs(x = "Month",
+       y = "Predicted score per month",
+       title = "No growth model prediction")
+```
+
+```{r}
+intervals(mod0)
+```
+
+
+
+```{r}
+#fitting linear growth model and assigning it to an object
+mod1 <- nlme(month_avg~(beta_1+d_1i)+(beta_2+d_2i)*month,  
+                   data=data_by_month,                      
+                   fixed=beta_1+beta_2~1,                      
+                   random=d_1i+d_2i~1,
+                   group=~user_id,                     
+                   start=c(beta_1=0.7,beta_2=0),
+                   na.action = na.pass)
+
+#obtaining summary of the model using the object we just created
+summary(mod1)
+```
+
+```{r}
+intervals(mod1)
+```
+
+
+
+```{r}
+#obtaining predicted scores for individuals
+data_by_month$pred_lg <- predict(mod1)
+
+#obtaining predicted scores for prototype
+data_by_month$proto_lg <- predict(mod1, level=0)
+
+#plotting predicted trajectories
+#intraindividual change trajetories
+ggplot(data = data_by_month, aes(x = month, y = pred_lg, group = user_id)) +
+  #geom_point(color="black") + 
+  geom_line(color="black", alpha = 0.05) +
+  geom_line(aes(x = month, y = proto_lg), color="red",size=2) + 
+  theme_bw() +   #changing style/background
+  #setting the x-axis with breaks and labels
+  scale_x_continuous(breaks = seq(0, 11)) +
+  labs(x = "Month",
+       y = "Predicted score per month",
+       title = "Linear growth model prediction")
+```
+
+
+Add time-invariant covariates
+
+```{r}
+#fitting linear growth model with tic and assigning it to an object
+mod2 <- nlme(month_avg ~ (beta_01 + beta_11*n_problem + d_1i) +
+                                (beta_02 + beta_12*n_problem + d_2i)*month,
+                          data= data_by_month,
+                          fixed=beta_01+beta_11+beta_02+beta_12~1,
+                          random=d_1i+d_2i~1,
+                          group=~user_id,
+                          start=c(beta_01=0.7, beta_11=0, 
+                                  beta_02=0, beta_12=0),
+                          na.action=na.pass)
+
+#obtaining summary of the model using the object we just created
+summary(mod2)
+```
+
+```{r}
+intervals(mod2)
+```
+
+
+
+```{r}
+#obtaining predicted scores for individuals
+data_by_month$pred_lg_cov <- predict(mod2)
+
+#obtaining predicted scores for prototype
+data_by_month$proto_lg_cov <- predict(mod2, level=0)
+
+#intraindividual change trajetories
+#plotting predicted trajectory
+ggplot(data = data_by_month, aes(x = month, y = pred_lg_cov, group = user_id)) +
+  #geom_point(color="gray", size=.5) + 
+  geom_line(alpha = 0.05) +  #adding lines to plot
+  theme_bw() +   #changing style/background
+  #setting the x-axis with breaks and labels
+  scale_x_continuous(breaks = seq(0, 11)) +
+  labs(x = "Month",
+       y = "Predicted score per month",
+       title = "Linear growth model with covariate prediction")
+```
+
