@@ -1,0 +1,233 @@
+---
+title: "HW 4"
+author: "Iris Zhong"
+date: '2022-11-18'
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(nlme)
+library(tidyverse)
+```
+
+# Research question
+
+As seen from the exploration last time, no growth over time can be observed from monthly aggregated assessment scores. So in this assignment, I'm going to investigate whether intrapersonal variances can be explained by any time-invariant covariate. In particular, ASSISTments, the digital learning platform where I retrieved the data, has designed affect detectors in their systems. How much a student is concentrated, frustrated, bored, or confused is measured on a 0-1 continuous scale. For this assignment, I will use the frustration detector to explore: Does a student's overall frustration when answering questions in ASSISTments influence their variance in monthly average assessment score? This is an objective 5 question: analysis of determinats of interindividual differences in intraindividual change. 
+
+My hypothesis is that students who have a high frustration score might answer questions wrong relatively frequently. Thus, their scores are consistently low, and the fluctuation in their scores is small. On the other hand, students who don't feel as frustruated should have higher average scores, but they can still answer questions wrong sometimes due to careless mistakes, so their scores might exhibit larger variances.
+
+# Data cleaning
+
+```{r}
+# read data
+data <- read_csv("processed_data.csv")
+```
+
+```{r}
+data_by_month <- data %>% 
+  group_by(user_id, month = month(start_time)) %>% 
+  summarize(month_avg = mean(correct),
+            assignment_count_per_month = uniqueN(assignment_id),
+            problem_count_per_month = uniqueN(problem_id))
+```
+
+keep persons that have responses in at least 6 months
+
+```{r}
+data_by_month <- data_by_month %>%
+  group_by(user_id) %>%
+  mutate(n_month = n()) %>%
+  filter(n_month > 6) %>%
+  ungroup()
+```
+
+keep persons that have tried at least 10 items each month they participated
+
+```{r}
+data_by_month <- data_by_month %>%
+  mutate(item_count_per_month_over_10 = ifelse(problem_count_per_month >= 10, 1, 0)) %>%
+  group_by(user_id) %>%
+  mutate(item_count_per_month_over_10 = mean(item_count_per_month_over_10)) %>%
+  filter(item_count_per_month_over_10 == 1) %>%
+  select(-item_count_per_month_over_10) %>%
+  ungroup()
+```
+
+Add number of items/assignments by learner
+
+Add the average score of frustration, concentrated, boredom for each person (each item attempt is marked with these affect scores)
+
+```{r}
+data_by_month <- data_by_month %>%
+  group_by(user_id) %>%
+  # overall number of items/assignments done by a learner 
+  mutate(n_problem = sum(problem_count_per_month),
+         n_assignment = sum(assignment_count_per_month)) %>%
+  # mean affect scores for an individual
+  left_join(data %>% group_by(user_id) %>% summarize(mean_frustrated = mean(frustrated_confidence), 
+                                                     mean_concentrated = mean(concentrating_confidence),
+                                                     mean_bored = mean(bored_confidence)), by = "user_id")
+```
+
+Centering the frustration, concentration, and boredom variables
+
+```{r}
+# find the means of these variables (each person is counted once)
+psych::describe(data_by_month %>% distinct(user_id, mean_frustrated, mean_concentrated, mean_bored))
+```
+
+```{r}
+# Subtract mean from individual scores
+data_by_month <- data_by_month %>%
+  mutate(mean_frustratedC = mean_frustrated - 0.39,
+         mean_concentratedC = mean_concentrated - 0.73,
+         mean_boredC = mean_bored - 0.25)
+```
+
+Recode month so that the month number reflects the number of months passed since September. (September coded as 0, October as 1, ..., August as 11)
+
+```{r}
+data_by_month <- data_by_month %>%
+  mutate(month = case_when(month > 8 ~ month - 9,
+                           month <= 8 ~ month + 3))
+```
+
+
+# Visualizations from raw data
+
+This is the graph from HW 3.
+
+```{r}
+ggplot(data = data_by_month,                    #data set
+       aes(x = month, y = month_avg, group = user_id)) + #setting variables
+  #geom_point(size=.5, alpha = 0.01) + #adding points to plot
+  geom_line(alpha = 0.05) +  #adding lines to plot
+  theme_bw() +   #changing style/background
+  scale_x_continuous(breaks = seq(0, 11)) +
+  labs(x = "Month",
+       y = "Average score per month",
+       title = "Learner average score by month")
+```
+
+No trend of growth can be observed from the figure. 
+
+
+Color the plot by their frustrated score: greater than +1SD, between -1 and +1 SD, smaller than -1SD.
+
+```{r}
+# Construct group based on SD
+frustrated_plot <- data_by_month %>%
+  mutate(frustrated_group = case_when(mean_frustratedC > 0.01 ~ "High frustration",
+                                      mean_frustratedC < -0.01 ~ "Low frustration",
+                                      T ~ "Average frustration")) %>%
+  mutate(frustrated_group = as.factor(frustrated_group))
+```
+
+```{r}
+ggplot(data = frustrated_plot,                    #data set
+       aes(x = month, y = month_avg, group = user_id)) + #setting variables
+  #geom_point(size=.5, alpha = 0.01) + #adding points to plot
+  geom_line(alpha = 0.05) +  #adding lines to plot
+  theme_bw() +   #changing style/background
+  scale_x_continuous(breaks = seq(0, 11)) +
+  labs(x = "Month",
+       y = "Average score per month",
+       title = "Learner average score by month") +
+  facet_wrap(~frustrated_group)
+```
+
+Interestingly, high frustration students seem to on average perform better than low frustration students. Possibly, high-performing students become frustrated when constantly given easy questions. The difference of variance among groups is not easily observed.
+
+# Model specification
+
+First, I will fit a model assuming homogeneous intrapersonal variance, but controlling for frustration in fixed effect.
+
+$score_i = \beta_{0i} + e_i$
+
+$\beta_{0i} = \gamma_{00} + \gamma_{01}frustration_i+ u_{0i}$.
+
+
+The next model allows within-person variance to vary by the magnitude of frustration.
+
+$score_i = \beta_{0i} + e_i$
+
+$\beta_{0i} = \gamma_{00} + \gamma_{01}frustration_i+ u_{0i}$, and $u_{0i} \sim frustration_i$.
+
+# Model fitting
+
+## Model 1
+
+```{r}
+model_1 = lme(fixed = month_avg ~ 1 + mean_frustratedC,
+               random = list(user_id = pdSymm(form = ~ 1)),
+               data = data_by_month,
+               na.action = na.exclude,
+               method = 'REML')
+summary(model_1)
+```
+
+The fixed effect suggests that, a learner with an average level of frustration is predicted to have a monthly average score of 0.72. If frustration increases by 0.1, the predicted score is 0.72 + 0.32 = 1.04. Thus, the observation from the plot is correct, that high frustration students receive higher scores. This also suggests a logistic transformation is probably needed. 
+
+```{r}
+VarCorr(model_1)
+```
+
+The variance from the intercept is 0.01. In other words, a student's intrapersonal score variance is set to be 0.01. 
+
+
+## Model 2
+
+```{r}
+model_2 = lme(fixed = month_avg ~ 1 + mean_frustratedC,
+               random = list(user_id = pdSymm(form = ~ 1)),
+               weights = varExp(form = ~ mean_frustratedC),
+               data = data_by_month,
+               na.action = na.exclude,
+               method = 'REML')
+summary(model_2)
+```
+
+The fixed effects can be interpreted in a similar fashion as above. 
+
+Variance is related to frustration negatively. That is, the more frustrated the student is, the less variance we'd predict. So, in general, students who are more frustrated score higher in the assessments in a more consistent way. 
+
+Graph the variance in Model 2:
+
+```{r}
+mean_frustration <- seq(-0.38, 0.60, 0.01) # set up graph x range
+var_mod2 <- summary(model_2)$sigma^2 * exp(coef(2*model_2$modelStruct$varStruct, uncons=FALSE)*mean_frustration)
+var_mod1 <- rep(0.01057132, length(mean_frustration)) # mod 1: variance is constant at 0.01
+```
+
+```{r}
+#make a data frame with predictions and back-transform centered variable to original scale. Both variances in mod 1 and mod 2.
+plotvars <- as.data.frame(cbind(mean_frustration, var_mod1, var_mod2))
+plotvars <- plotvars %>% 
+  pivot_longer(cols = c("var_mod1", "var_mod2"), names_to = "type", values_to = "value")
+plotvars$mean_frustration <- plotvars$mean_frustration + 0.39
+#plotting
+ggplot(data = plotvars, aes(x = mean_frustration, y = value, color = type), legend=FALSE) +
+  geom_point() +
+  geom_line() + 
+  xlab("Frustration") + 
+  ylab("Predicted Intraindividual Variance") + 
+  ylim(0, 0.1) +
+  geom_vline(xintercept = 0.39, linetype = "dashed", color = "coral")
+```
+
+The graph shows that when the student is in low frustration, the variance of their own scores is estimated higher in model 2 than model 1; conversly, a high frustration student is estimated with a higher intrapersonal variance in model 1 than model 2. 
+
+(Note: frustration score only ranges between 0.36 and 0.43 in the data)
+
+# Model comparison
+
+```{r}
+anova(model_1, model_2)
+```
+
+The ANOVA test shows that allowing heterogeneity in intrapersonal variances significantly increases model fit. 
+
