@@ -12,6 +12,8 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r}
 library(nlme)
 library(tidyverse)
+library(data.table)
+library(lubridate)
 ```
 
 # Research question
@@ -219,7 +221,7 @@ ggplot(data = plotvars, aes(x = mean_frustration, y = value, color = type), lege
   geom_vline(xintercept = 0.39, linetype = "dashed", color = "coral")
 ```
 
-The graph shows that when the student is in low frustration, the variance of their own scores is estimated higher in model 2 than model 1; conversly, a high frustration student is estimated with a higher intrapersonal variance in model 1 than model 2. 
+The graph shows that when the student is in low frustration, the variance of their own scores is estimated higher in model 2 than model 1; conversely, a high frustration student is estimated with a higher intrapersonal variance in model 1 than model 2. 
 
 (Note: frustration score only ranges between 0.36 and 0.43 in the data)
 
@@ -231,3 +233,5 @@ anova(model_1, model_2)
 
 The ANOVA test shows that allowing heterogeneity in intrapersonal variances significantly increases model fit. 
 
+
+In summary, the analysis finds that students with higher frustration tend to score higher with less variance. 
