@@ -1,0 +1,233 @@
+---
+title             : "The Effect of Frustration on Students' Assessment Scores in a Digital Learning Platform"
+shorttitle        : "The effect of frustration on student scores"
+
+author: 
+  - name          : "Iris Zhong"
+    affiliation   : "1"
+    corresponding : no    # Define only one corresponding author
+
+affiliation:
+  - id            : "1"
+    institution   : "Stanford University"
+
+keywords          : "keywords"
+wordcount         : "X"
+
+bibliography      : ["r-references.bib", "references.bib"]
+
+floatsintext      : no
+linenumbers       : no
+draft             : no
+mask              : no
+
+figurelist        : no
+tablelist         : no
+footnotelist      : no
+
+classoption       : "man"
+output            : papaja::apa6_docx
+---
+
+```{r setup, include = FALSE}
+library(papaja)
+library(tidyverse)
+library(lme4)
+library(lubridate)
+library(data.table)
+#library(stargazer)
+#r_refs("r-references.bib")
+```
+
+```{r read data}
+data <- read_csv("processed_data.csv")
+```
+
+```{r clean data}
+# get average correctness/problem/frustration per month
+data_by_month <- data %>% 
+  group_by(user_id, month = month(start_time)) %>% 
+  summarize(score_avg = mean(correct),
+            frustration_per_month = mean(frustrated_confidence),
+            problem_count_per_month = uniqueN(problem_id))
+
+# keep persons that have responses in at least 6 months
+data_by_month <- data_by_month %>%
+  group_by(user_id) %>%
+  mutate(n_month = n()) %>%
+  filter(n_month > 6) %>%
+  ungroup()
+
+# keep persons that have tried at least 10 items each month they participated
+data_by_month <- data_by_month %>%
+  mutate(item_count_per_month_over_10 = ifelse(problem_count_per_month >= 10, 1, 0)) %>%
+  group_by(user_id) %>%
+  mutate(item_count_per_month_over_10 = mean(item_count_per_month_over_10)) %>%
+  filter(item_count_per_month_over_10 == 1) %>%
+  select(-item_count_per_month_over_10) %>%
+  ungroup()
+
+# Re-scale score and frustration
+data_by_month <- data_by_month %>%
+  mutate(score_avg = score_avg * 100,
+         frustration_per_month = frustration_per_month * 100)
+
+# Get frustration, number of items and score trait: average by person
+data_state <- data_by_month %>%
+  group_by(user_id) %>%
+  summarize(frustration_trait = mean(frustration_per_month),
+            n_problem_trait = mean(problem_count_per_month),
+            score_trait = mean(score_avg)) 
+
+# Center for each individual
+# data_state$frustration_trait_c <- scale(data_state$frustration_trait, 
+#                                         center = TRUE, scale = FALSE)
+# data_state$n_problem_trait_c <- scale(data_state$n_problem_trait, 
+#                                         center = TRUE, scale = FALSE)
+# data_state$score_trait_c <- scale(data_state$score_trait, 
+#                                         center = TRUE, scale = FALSE)
+
+data_state <- data_state %>%
+  mutate(frustration_trait_c = c(scale(frustration_trait, center = T, scale = F)),
+         n_problem_trait_c = c(scale(n_problem_trait, center = T, scale = F)),
+         score_trait_c = c(scale(score_trait, center = T, scale = F)))
+
+# Get frustration and number of items state: diff between raw score and state score
+
+data_by_month <- data_by_month %>%
+  left_join(data_state, by = "user_id") %>%
+  mutate(frustration_state = frustration_per_month - frustration_trait,
+         n_problem_state = problem_count_per_month - n_problem_trait,
+         score_state = score_avg - score_trait)
+
+# Recode month
+data_by_month <- data_by_month %>%
+  mutate(month = case_when(month > 8 ~ month - 9,
+                           month <= 8 ~ month + 3))
+
+```
+
+# Hypothesis
+
+The current dataset comes from a free online tutoring platform -- ASSISTments [@feng2009]. It is called a "tutoring" system, because if students get a question wrong, they are provided with a small "tutoring" session where they must answer a few questions that break the problem down into steps. The students in this dataset were all middle school students.
+
+ASSISTments also includes sensor-free affect detectors that estimates a student's likelihood of feeling frustrated, bored, confused, or concentrated [@wang2015a]. In the previous homework, I explored whether a student's overall frustration when answering questions in ASSISTments influenced their variance in monthly average assessment score. A side discovery was that students with higher frustration score on average did better in assessments. Therefore, in the current paper, I want to explore how students' monthly frustration score affected their scores. In particular, the related two research questions are:
+
+1)  How does frustration explain between-person variances in scores?
+
+I hypothesize that invidiuals with more frustration scored higher in assessments than those with lower frustration, if the finding from the previous project holds true.
+
+2)  How does frustration explain within-person fluctuation in monthly assessment scores?
+
+If frustration stimulates students to perform better in assessments, I hypothesize that in months when frustration score are higher, students' scores would be higher than their own scores when frustration is lower.
+
+The first research question addresses Objective #5 -- determinants of individual differences in intraindividual change. The second research question addresses Objective #4 -- determinants of intraindividual change.
+
+# Data analysis
+
+The current paper explores two hypotheses: 1) students with higher overall frustration (trait frustration) tend to score higher in assessments than students with lower frustration; 2) for an individual student, their scores are higher when they are more frustrated (state frustration). Intraindividual covariance model from the multilevel modeling framework is applied, since it can address both between-person variances explained by trait and within-person variances explained by state [@grimm2017].
+
+First, a simple model with fewer interactions and random effects is attempted. It mainly consists of four parts: $\beta_{0i}$ tells a person-specific intercept of scores, $\beta_{1i}$ is a person-specific slope, $\beta_{2i}$ is the effect of within-person changes in frustration on scores, and $e_{ti}$ is the error term.
+
+$score\_avg_{ti} = \beta_{0i} + \beta_{1i}month + \beta_{2i}(frustration_{ti}-\overline{frustration_{i}}) + e_{ti}$, where
+
+$\beta_{0i} = \gamma_{00} + \gamma_{01}\overline{frustration_{i}} + u_{0i}$,
+
+$\beta_{1i} = \gamma_{10} + \gamma_{11}\overline{frustration_{i}}$,
+
+$\beta_{2i} = \gamma_{20} + u_{2i}$.
+
+$\gamma_{01}$ describes the estimated score from a prototypical student with average level of frustration overall. $\gamma_{01}$ indicates the change in assessment score if a student's trait frustration (i.e. average frustration over time for a person) increases by one point, and it addresses the first research question about the effect of trait frustration on between-person variations in scores. $\gamma_{10}$ tells a prototypical person's change of assessment scores over time, and $\gamma_{11}$ shows the change in the slope if a person's trait frustration increases by one. The effect of within-person changes in frustration on scores is captured by $\gamma_{20}$, which is the target parameter for the second research question. Finally, random effects $u_{0i}$ and $u_{2i}$ are assumed to be multivariate normal.
+
+A full model is then applied. Compared to the first model, it adds $\gamma_{21}$ -- differences in the within-person association between state frustration and scores controlled by trait frustration, and $u_{1i}$ -- random effect on person-specific slope. 
+
+$score\_avg_{ti} = \beta_{0i} + \beta_{1i}month + \beta_{2i}(frustration_{ti}-\overline{frustration_{i}}) + e_{ti}$, where
+
+$\beta_{0i} = \gamma_{00} + \gamma_{01}\overline{frustration_{i}} + u_{0i}$,
+
+$\beta_{1i} = \gamma_{10} + \gamma_{11}\overline{frustration_{i}} + u_{1i}$,
+
+$\beta_{2i} = \gamma_{20} + \gamma_{21}\overline{frustration_{i}} + u_{2i}$.
+
+To make variables at roughly the same scale, I multiply all frustration and score-related fields by 100. The trait frustration predictor is centered by subtracting the mean from the average frustration score for each person. State frustration is derived from subtracting the person-level mean from each frustration score.
+
+The models are run in R [@R-base] using the `lme4` package [@R-lme4]. They are fit by the restricted maximum likelihood method, with missing values excluded from analysis. Statistical significance is measured by inspecting whether 0 is within 95% confidence interval. 
+
+The entire analysis is supported by the following software and packages: `r cite_r("r-references.bib")`.
+
+# Results
+
+Results from the intraindividual covariance models to estimate the effect of frustration on between-person and within-person variations in assessment scores are shown in the table below. 
+
+```{r fit model 1}
+model1_fit <- lmer(formula = score_avg ~ 1 + frustration_trait_c + month +  frustration_trait_c:month + 
+                      frustration_state + 
+                      (1 + frustration_state|user_id), 
+                   data = data_by_month, na.action=na.exclude)
+#summary(model1_fit)
+```
+
+
+```{r write table 1, results='asis'}
+apa_lm <- apa_print(model1_fit)
+apa_table(
+  apa_lm$table
+  , caption = "Intraindividual covariance model 1."
+)
+```
+
+In the simple model (see Table 1), a prototypical learner with a mean level of trait frustration is estimated to score 72.44% of the points at the start of the school year ($\gamma_{00}$ = 72.44, t = 296.76, 95%CI = [71.96, 72.91]). If a student's trait frustration is one point above the mean, their score is predicted to be 2.5 points higher ($\gamma_{01}$ = 2.50, t = 9.10, 95%CI = [1.96, 3.04]), and the result is consistent with the first hypothesis that students with a higher level of overall frustration tend to score higher in assessments. A prototypical student's scores is estimated to decrease by 0.23 points every month ($\gamma_{10}$ = -0.23, t = -8.63, 95%CI = [-0.28, -0.18]). The interaction between month and trait frustration has a coefficient of 0.08, suggesting that for a student with a trait frustration one point higher than average, their slope is predicted to be 0.08 greater than a prototypical student's slope ($\gamma_{11}$ = 0.08, t = 2.52, 95%CI = [0.02, 0.14]). Finally, regarding within-person fluctuations in frustration, if a student's state frustration at one timepoint is greater than their trait frustration by one point, their score is estimated to be 0.54 higher than their average score ($\gamma_{20}$ = 0.54, t = 10.40, 95%CI = [0.44, 0.64]). This finding is in line with the second hypothesis that for each individual, in months when frustration score are higher, their scores are higher. All of the predictors in the model are statistically significant, according to their confidence intervals.
+
+For random effects, the variance of the intercept is 107.12, indicating large between-person differences in assessment scores. The variance of state frustration is 1.429, suggesting small between-person differences in the within-person association between state frustration and scores. The correlation between the two is -0.37. Thus, a person with high scores at the start are more likely to have a more negative association between frustration and score. 
+
+
+```{r plot between-person}
+ggplot(data = data_by_month, aes(x = frustration_trait, y = score_trait, group = factor(user_id)), legend=FALSE) +
+  geom_point(colour="gray40") +
+  geom_smooth(aes(group=1), method=lm, se=FALSE, fullrange=FALSE, lty=1, size=2, color="blue") +
+  xlab("Trait Frustration") + ylab("Trait Score") +
+  theme_classic() +
+  theme(axis.title=element_text(size=16),
+        axis.text=element_text(size=12),
+        plot.title=element_text(size=16, hjust=.5)) +
+  ggtitle("Figure 1. Between-Person Association Plot\nTrait Frustration & Score")
+```
+
+Figure 1 demonstrates the relationship between a person's trait frustration with their average score. Same as the finding from the model parameters, students with higher trait frustration are more likely to have a higher mean score. 
+
+
+```{r plot within-person}
+ggplot(data = data_by_month, aes(x = frustration_state, y = predict(model1_fit), group=factor(user_id), colour="gray"), legend=FALSE) +
+  geom_smooth(method=lm, se=FALSE, fullrange=FALSE, lty=1, size=.5, color="gray40") +
+  geom_smooth(aes(group=1), method=lm, se=FALSE, fullrange=FALSE, lty=1, size=2, color="blue") +
+  xlab("State Frustration") + ylab("Predicted Score") +
+  theme_classic() +
+  theme(axis.title=element_text(size=18),
+        axis.text=element_text(size=14),
+        plot.title=element_text(size=18, hjust=.5)) +
+  ggtitle("Figure 2. Within-Person Association\nState Frustration & Score")
+```
+
+Figure 2 shows the association between state frustration (centered) and predicted assessment score form the model. Each line represents the predicted score for a student. Most lines in the plot have a positive slope, demonstrating the positive association between within-person state frustration and score. 
+
+
+
+```{r fit model 2}
+model2_fit <- lmer(formula = score_avg ~ 1 + frustration_trait_c + month + frustration_trait_c:month +
+                     frustration_state + frustration_state:frustration_trait_c + 
+                      (1 + month + frustration_state|user_id), 
+                   data = data_by_month, na.action = na.exclude)
+summary(model2_fit)
+```
+
+
+Model 2 fits the full model, with the interaction between trait frustration and state frustration, and a random effect on month added. This allows the within-person association between state frustration and score to depend on trait frustration, and person-specific slopes to vary outside of the effect of frustration. However, this model fails to converge (max|grad| = 0.008), so the current paper does not report the results from Model 2. 
+
+
+
+\newpage
+
+# References
+
+::: {#refs custom-style="Bibliography"}
+:::
